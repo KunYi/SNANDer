@@ -35,12 +35,12 @@
 #endif
 
 #define	 USB_TIMEOUT			1000	/* 1000 ms is plenty and we have no backup strategy anyway. */
-#define	 WRITE_EP			0x02
-#define	 READ_EP			0x82
+#define	 WRITE_EP			(programmer->ep)
+#define	 READ_EP			((programmer->ep | 0x80))
 
-#define	 CH341_PACKET_LENGTH		0x20
-#define	 CH341_MAX_PACKETS		256
-#define	 CH341_MAX_PACKET_LEN		(CH341_PACKET_LENGTH * CH341_MAX_PACKETS)
+#define	 CH341_PACKET_LENGTH		(programmer->ep_size)
+//#define	 CH341_MAX_PACKETS		256
+//#define	 CH341_MAX_PACKET_LEN		(CH341_PACKET_LENGTH * CH341_MAX_PACKETS)
 
 #define	 CH341A_CMD_SET_OUTPUT		0xA1
 #define	 CH341A_CMD_IO_ADDR		0xA2
@@ -82,6 +82,8 @@ struct dev_entry {
 	uint16_t device_id;
 	const char *vendor_name;
 	const char *device_name;
+	uint8_t  ep;
+	uint16_t ep_size;
 };
 
 /* We need to use many queued IN transfers for any resemblance of performance (especially on Windows)
@@ -92,9 +94,12 @@ static struct libusb_transfer *transfer_ins[USB_IN_TRANSFERS] = {0};
 struct libusb_device_handle *handle = NULL;
 
 const struct dev_entry devs_ch341a_spi[] = {
-	{0x1A86, 0x5512, "WinChipHead (WCH)", "CH341A"},
+	{0x1A86, 0x5512, "WinChipHead (WCH)", "CH341A", 2, 32},
+	{0x1A86, 0x55db, "WinChipHead (WCH)", "CH347T", 6, 512},
 	{0},
 };
+
+static struct dev_entry const *programmer = NULL;
 
 enum trans_state {TRANS_ACTIVE = -2, TRANS_ERR = -1, TRANS_IDLE = 0};
 
@@ -415,14 +420,26 @@ int ch341a_spi_init(void)
 #else
 	libusb_set_debug(NULL, 3); // Enable information, warning and error messages (only).
 #endif
-	uint16_t vid = devs_ch341a_spi[0].vendor_id;
-	uint16_t pid = devs_ch341a_spi[0].device_id;
-	handle = libusb_open_device_with_vid_pid(NULL, vid, pid);
-	if (handle == NULL) {
-		printf("Couldn't open device %04x:%04x.\n", vid, pid);
+	for (int i = 0; i < (sizeof(devs_ch341a_spi)/sizeof(devs_ch341a_spi[0])); i++) {
+		const uint16_t vid = devs_ch341a_spi[i].vendor_id;
+		const uint16_t pid = devs_ch341a_spi[i].device_id;
+		if ((vid == 0) && (pid == 0)) {
+			break;
+		}
+		handle = libusb_open_device_with_vid_pid(NULL, vid, pid);
+		if (handle == NULL) {
+			//printf("Couldn't open device %04x:%04x.\n", vid, pid);
+			continue;
+		} else {
+			programmer = &devs_ch341a_spi[i];
+			printf("Found programmer device: %s - %s\n", programmer->vendor_name, programmer->device_name);
+			break;
+		}
+	}
+	if (programmer == NULL) {
+		printf("Couldn't open any ch341a/ch347 device\n");
 		return -1;
 	}
-	printf("Found programmer device: %s - %s\n", devs_ch341a_spi[0].vendor_name, devs_ch341a_spi[0].device_name);
 
 #ifdef __gnu_linux__
 	/* libusb_detach_kernel_driver() and friends basically only work on Linux. We simply try to detach on Linux
